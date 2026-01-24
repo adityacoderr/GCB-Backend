@@ -27,9 +27,20 @@ mongoose
   });
 
 /* ================== SOCKET.IO ================== */
+const allowedOrigin = process.env.CLIENT_URL || "*";
+
+app.use(cors({
+  origin: allowedOrigin,
+  credentials: true
+}));
+
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] }
+  cors: {
+    origin: allowedOrigin,
+    methods: ["GET", "POST"]
+  }
 });
+
 
 matchSocket(io);
 
