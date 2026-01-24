@@ -27,7 +27,7 @@ mongoose
   });
 
 /* ================== SOCKET.IO ================== */
-const allowedOrigin = process.env.CLIENT_URL || "*";
+const allowedOrigin = "*";
 
 app.use(cors({
   origin: allowedOrigin,
