@@ -506,14 +506,63 @@ export const declareInnings = async (req, res) => {
     if (!match) return res.status(404).json({ error: "Match not found" });
 
     if (match.format !== "TEST")
-      return res.status(400).json({ error: "Declaration only in Test" });
+      return res.status(400).json({ error: "Only allowed in TEST" });
 
-    startNextInnings(match);
+    if (match.status !== "LIVE")
+      return res.status(400).json({ error: "Match not live" });
+
+    const innings = match.innings[match.currentInnings - 1];
+
+    if (innings.isDeclared)
+      return res.status(400).json({ error: "Already declared" });
+
+    // 🔥 MARK DECLARED
+    innings.isDeclared = true;
+
+    // 🔥 MOVE TO NEXT INNINGS
+    match.currentInnings += 1;
+
+    // Create next innings object
+    const nextBattingTeam =
+      innings.bowlingTeam;
+
+    const nextBowlingTeam =
+      innings.battingTeam;
+
+    const squad =
+      nextBattingTeam === match.teams[0]
+        ? match.squads.teamA
+        : match.squads.teamB;
+
+    match.innings.push({
+      inningsNumber: match.currentInnings,
+      battingTeam: nextBattingTeam,
+      bowlingTeam: nextBowlingTeam,
+      totalRuns: 0,
+      wickets: 0,
+      ballsBowled: 0,
+      striker: null,
+      nonStriker: null,
+      currentBowler: null,
+      lastBowler: null,
+      isDeclared: false,
+      players: squad.map((p) => ({
+        name: p.name,
+        role: p.role,
+        runs: 0,
+        balls: 0,
+        status: "YET_TO_BAT"
+      })),
+      ballsLog: []
+    });
 
     await match.save();
-    res.json(match);
 
+    req.io.to(match._id.toString()).emit("match-updated", match);
+
+    res.json(match);
   } catch (err) {
+    console.error("DECLARE ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 };
