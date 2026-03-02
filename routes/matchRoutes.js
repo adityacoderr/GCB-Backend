@@ -8,7 +8,8 @@ import {
   addBall,
   addNextBatter,
   getMatch,
-  getLiveMatches
+  getLiveMatches,
+  declareInnings
 } from "../controllers/matchController.js";
 
 const router = express.Router();
@@ -22,6 +23,7 @@ router.post("/set-openers", setOpeners);
 router.post("/select-bowler", selectBowler);
 router.post("/add-ball", addBall);
 router.post("/add-next-batter", addNextBatter);
+router.post("/declare", declareInnings);
 
 /* PUBLIC */
 router.get("/live", getLiveMatches);
