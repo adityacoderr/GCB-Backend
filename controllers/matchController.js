@@ -198,23 +198,53 @@ function startSpecificInnings(match, battingTeam, bowlingTeam) {
 
 function completeMatch(match) {
 
-  const teamARuns = match.innings
-    .filter(i => i.battingTeam === match.teams[0])
-    .reduce((sum, i) => sum + i.totalRuns, 0);
+  const teamA = match.teams[0];
+  const teamB = match.teams[1];
 
-  const teamBRuns = match.innings
-    .filter(i => i.battingTeam === match.teams[1])
-    .reduce((sum, i) => sum + i.totalRuns, 0);
+  const teamATotal = match.innings
+    .filter(i => i.battingTeam === teamA)
+    .reduce((s, i) => s + i.totalRuns, 0);
+
+  const teamBTotal = match.innings
+    .filter(i => i.battingTeam === teamB)
+    .reduce((s, i) => s + i.totalRuns, 0);
 
   match.status = "COMPLETED";
 
-  if (teamARuns > teamBRuns) {
-    match.result = `${match.teams[0]} won by ${teamARuns - teamBRuns} runs`;
-  } else if (teamBRuns > teamARuns) {
-    match.result = `${match.teams[1]} won by ${teamBRuns - teamARuns} runs`;
-  } else {
-    match.result = "Match Drawn";
+  // ===== ODI 2nd innings wickets win =====
+  if (match.format === "ODI") {
+
+    const lastInnings = match.innings[1];
+
+    if (match.target && lastInnings.totalRuns >= match.target) {
+
+      const wicketsLeft =
+        lastInnings.players.length - 1 - lastInnings.wickets;
+
+      match.result = `${lastInnings.battingTeam} won by ${wicketsLeft} wickets`;
+      return;
+    }
   }
+
+  // ===== TEST innings victory =====
+  if (match.format === "TEST") {
+
+    if (match.innings.length === 3 && match.followOn) {
+
+      const first = match.innings[0];
+
+      match.result = `${first.battingTeam} won by an innings`;
+      return;
+    }
+  }
+
+  // ===== Normal run win =====
+  if (teamATotal > teamBTotal)
+    match.result = `${teamA} won by ${teamATotal - teamBTotal} runs`;
+  else if (teamBTotal > teamATotal)
+    match.result = `${teamB} won by ${teamBTotal - teamATotal} runs`;
+  else
+    match.result = "Match Drawn";
 }
 /* ================= ADD BALL (CORE ENGINE) ================= */
 export const addBall = async (req, res) => {
@@ -349,35 +379,72 @@ export const addBall = async (req, res) => {
       /* ================= TEST ================= */
       if (match.format === "TEST") {
 
-        if (totalInningsPlayed === 2) {
+  const inningsCount = match.innings.length;
 
-          const first = match.innings[0];
-          const second = match.innings[1];
+  // AFTER 2 INNINGS → FOLLOW ON CHECK
+  if (inningsCount === 2) {
 
-          const lead =
-            first.totalRuns - second.totalRuns;
+    const first = match.innings[0];
+    const second = match.innings[1];
 
-          if (lead >= 100) {
-            match.followOn = true;
+    const lead = first.totalRuns - second.totalRuns;
 
-            startSpecificInnings(
-              match,
-              second.battingTeam,
-              second.bowlingTeam
-            );
+    if (lead >= 100) {
+      match.followOn = true;
 
-            await match.save();
-            req.io.to(match._id.toString()).emit("match-updated", match);
-            return res.json(match);
-          }
-        }
+      startSpecificInnings(
+        match,
+        second.battingTeam,
+        second.bowlingTeam
+      );
 
-        if (totalInningsPlayed < totalAllowedInnings) {
-          startNextInnings(match);
-        } else {
-          completeMatch(match);
-        }
-      }
+      await match.save();
+      req.io.to(match._id.toString()).emit("match-updated", match);
+      return res.json(match);
+    }
+  }
+  if (
+  match.format === "TEST" &&
+  match.innings.length === 4 &&
+  match.target &&
+  innings.totalRuns >= match.target
+) {
+  completeMatch(match);
+}
+
+  // AFTER 3 INNINGS → SET TARGET FOR 4TH
+  if (inningsCount === 3) {
+
+    const teamATotal = match.innings
+      .filter(i => i.battingTeam === match.teams[0])
+      .reduce((s, i) => s + i.totalRuns, 0);
+
+    const teamBTotal = match.innings
+      .filter(i => i.battingTeam === match.teams[1])
+      .reduce((s, i) => s + i.totalRuns, 0);
+
+    match.target = Math.abs(teamATotal - teamBTotal) + 1;
+  }
+
+  // DURING 4TH INNINGS → CHASE CHECK
+  if (inningsCount === 4) {
+
+    const chasing = match.innings[3];
+
+    if (match.target && chasing.totalRuns >= match.target) {
+      completeMatch(match);
+      await match.save();
+      req.io.to(match._id.toString()).emit("match-updated", match);
+      return res.json(match);
+    }
+  }
+
+  if (inningsCount < match.maxInningsPerTeam * 2) {
+    startNextInnings(match);
+  } else {
+    completeMatch(match);
+  }
+}
     }
 
     await match.save();
@@ -429,6 +496,27 @@ export const addNextBatter = async (req, res) => {
   }
 };
 
+// Declare innings (TEST only, by batting team choice) - can be done anytime after 1st innings end, even mid-over
+
+export const declareInnings = async (req, res) => {
+  try {
+    const { matchId } = req.body;
+
+    const match = await Match.findById(matchId);
+    if (!match) return res.status(404).json({ error: "Match not found" });
+
+    if (match.format !== "TEST")
+      return res.status(400).json({ error: "Declaration only in Test" });
+
+    startNextInnings(match);
+
+    await match.save();
+    res.json(match);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
 
 /* ================= GET LIVE MATCHES ================= */
 export const getLiveMatches = async (req, res) => {
