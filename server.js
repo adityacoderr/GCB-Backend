@@ -7,6 +7,7 @@ import { Server } from "socket.io";
 
 import matchRoutes from "./routes/matchRoutes.js";
 import matchSocket from "./sockets/matchSockets.js";
+import { declareInnings } from "./controllers/matchController.js";
 
 dotenv.config();
 
@@ -53,6 +54,7 @@ app.use((req, res, next) => {
 /* ================== ROUTES ================== */
 app.get("/", (req, res) => res.send("Gully Cricket API running"));
 app.use("/api/match", matchRoutes);
+app.use("/api/match/declare", declareInnings); 
 
 /* ================== ERROR HANDLER ================== */
 app.use((err, req, res, next) => {
