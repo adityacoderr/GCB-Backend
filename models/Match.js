@@ -89,7 +89,7 @@ const MatchSchema = new mongoose.Schema(
       default: 1 // ODI default
     },
 
-    followOn: {
+    isDeclared : {
       type: Boolean,
       default: false
     },
