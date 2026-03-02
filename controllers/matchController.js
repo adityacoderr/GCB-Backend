@@ -147,6 +147,75 @@ export const startMatch = async (req, res) => {
   }
 };
 
+function startNextInnings(match) {
+  const lastInnings = match.innings[match.innings.length - 1];
+
+  const isTeamA = lastInnings.battingTeam === match.teams[0];
+
+  const nextBattingTeam = isTeamA
+    ? match.teams[1]
+    : match.teams[0];
+
+  const nextBowlingTeam = isTeamA
+    ? match.teams[0]
+    : match.teams[1];
+
+  startSpecificInnings(match, nextBattingTeam, nextBowlingTeam);
+}
+
+function startSpecificInnings(match, battingTeam, bowlingTeam) {
+
+  const squadSource =
+    battingTeam === match.teams[0]
+      ? match.squads.teamA
+      : match.squads.teamB;
+
+  const playersCopy = squadSource.map((p) => ({
+    name: p.name,
+    role: p.role,
+    runs: 0,
+    balls: 0,
+    status: "YET_TO_BAT"
+  }));
+
+  match.currentInnings = match.innings.length + 1;
+
+  match.innings.push({
+    inningsNumber: match.currentInnings,
+    battingTeam,
+    bowlingTeam,
+    totalRuns: 0,
+    wickets: 0,
+    ballsBowled: 0,
+    striker: null,
+    nonStriker: null,
+    currentBowler: null,
+    lastBowler: null,
+    players: playersCopy,
+    ballsLog: []
+  });
+}
+
+function completeMatch(match) {
+
+  const teamARuns = match.innings
+    .filter(i => i.battingTeam === match.teams[0])
+    .reduce((sum, i) => sum + i.totalRuns, 0);
+
+  const teamBRuns = match.innings
+    .filter(i => i.battingTeam === match.teams[1])
+    .reduce((sum, i) => sum + i.totalRuns, 0);
+
+  match.status = "COMPLETED";
+
+  if (teamARuns > teamBRuns) {
+    match.result = `${match.teams[0]} won by ${teamARuns - teamBRuns} runs`;
+  } else if (teamBRuns > teamARuns) {
+    match.result = `${match.teams[1]} won by ${teamBRuns - teamARuns} runs`;
+  } else {
+    match.result = "Match Drawn";
+  }
+}
 /* ================= ADD BALL (CORE ENGINE) ================= */
 export const addBall = async (req, res) => {
   try {
