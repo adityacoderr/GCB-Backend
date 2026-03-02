@@ -72,12 +72,32 @@ const MatchSchema = new mongoose.Schema(
   {
     teams: { type: [String], required: true },
 
+    format: {
+      type: String,
+      enum: ["TEST", "ODI"],
+      required: true
+    },
+
     oversLimit: { type: Number, required: true },
 
     scorerPinHash: { type: String, required: true },
 
     currentInnings: { type: Number, default: 1 },
-    target: Number,
+
+    maxInningsPerTeam: {
+      type: Number,
+      default: 1 // ODI default
+    },
+
+    followOn: {
+      type: Boolean,
+      default: false
+    },
+
+    result: {
+      type: String,
+      default: null
+    },
 
     status: {
       type: String,
@@ -85,7 +105,6 @@ const MatchSchema = new mongoose.Schema(
       default: "SETUP"
     },
 
-    // ✅ BOTH SQUADS STORED HERE
     squads: {
       teamA: { type: [PlayerSchema], default: [] },
       teamB: { type: [PlayerSchema], default: [] }

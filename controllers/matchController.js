@@ -4,7 +4,7 @@ import bcrypt from "bcrypt";
 /* ================= CREATE MATCH ================= */
 export const createMatch = async (req, res) => {
   try {
-    const { oversLimit, teams, players, pin } = req.body;
+    const { oversLimit, teams, players, pin, format } = req.body;
 
     if (
       !oversLimit ||
@@ -19,6 +19,12 @@ export const createMatch = async (req, res) => {
       return res.status(400).json({ error: "Invalid match setup data" });
     }
 
+    if (!format || !["TEST", "ODI"].includes(format)) {
+      return res.status(400).json({ error: "Invalid match format" });
+    }
+
+    const maxInningsPerTeam = format === "TEST" ? 2 : 1;
+
     const pinHash = await bcrypt.hash(pin, 10);
 
     const normalizePlayer = (p) => ({
@@ -32,7 +38,6 @@ export const createMatch = async (req, res) => {
     const squadA = players.teamA.map(normalizePlayer);
     const squadB = players.teamB.map(normalizePlayer);
 
-    // Innings 1: Team A bats by default (can change later)
     const innings1 = {
       inningsNumber: 1,
       battingTeam: teams[0],
@@ -44,12 +49,14 @@ export const createMatch = async (req, res) => {
       nonStriker: null,
       currentBowler: null,
       lastBowler: null,
-      players: squadA.map((p) => ({ ...p })), // batting scorecard snapshot
+      players: squadA.map((p) => ({ ...p })),
       ballsLog: []
     };
 
     const match = await Match.create({
       teams,
+      format,
+      maxInningsPerTeam,
       oversLimit: Number(oversLimit),
       scorerPinHash: pinHash,
       currentInnings: 1,
@@ -152,39 +159,34 @@ export const addBall = async (req, res) => {
     if (match.status !== "LIVE")
       return res.status(400).json({ error: "Match not live" });
 
-    // ✅ Always re-resolve innings from match.currentInnings
-    const currentInningsObj = match.innings[match.currentInnings - 1];
-    if (!currentInningsObj)
+    const innings = match.innings[match.currentInnings - 1];
+    if (!innings)
       return res.status(400).json({ error: "Invalid innings state" });
 
-    const innings = currentInningsObj;
-
-    if (!innings.striker || !innings.nonStriker) {
+    if (!innings.striker || !innings.nonStriker)
       return res.status(400).json({ error: "Select batters first" });
-    }
 
-    if (!innings.currentBowler) {
+    if (!innings.currentBowler)
       return res.status(400).json({ error: "Select bowler first" });
-    }
 
     const legalBall = type === "RUN" || type === "WICKET";
     const maxBalls = match.oversLimit * 6;
 
-    if (legalBall && innings.ballsBowled >= maxBalls) {
+    if (legalBall && innings.ballsBowled >= maxBalls)
       return res.status(400).json({ error: "Overs completed" });
-    }
 
     const over = Math.floor(innings.ballsBowled / 6) + 1;
     const ball = (innings.ballsBowled % 6) + 1;
 
-    const striker = innings.players.find((p) => p.name === innings.striker);
-    if (!striker) return res.status(400).json({ error: "Striker invalid" });
+    const striker = innings.players.find(
+      (p) => p.name === innings.striker
+    );
+    if (!striker)
+      return res.status(400).json({ error: "Striker invalid" });
 
-    // ✅ capture bowler BEFORE modifications
     const ballBowler = innings.currentBowler;
 
     /* ================= EXTRAS ================= */
-    // Wide / NoBall => run count added, not legal ball
     if (type === "WIDE" || type === "NOBALL") {
       innings.totalRuns += safeRuns;
 
@@ -204,21 +206,16 @@ export const addBall = async (req, res) => {
 
     /* ================= LEGAL BALL ================= */
     innings.totalRuns += safeRuns;
-
     striker.runs += safeRuns;
     striker.balls += 1;
     innings.ballsBowled += 1;
 
-    /* ================= WICKET ================= */
     if (type === "WICKET") {
       innings.wickets += 1;
       striker.status = "OUT";
-      // striker becomes null -> frontend selects next batter
       innings.striker = null;
     }
 
-    /* ================= STRIKE ROTATION ================= */
-    // Rotate strike only if NOT wicket (because striker is already OUT)
     if (type !== "WICKET" && safeRuns % 2 === 1) {
       [innings.striker, innings.nonStriker] = [
         innings.nonStriker,
@@ -226,7 +223,6 @@ export const addBall = async (req, res) => {
       ];
     }
 
-    /* ================= LOG BALL ================= */
     innings.ballsLog.push({
       over,
       ball,
@@ -236,10 +232,9 @@ export const addBall = async (req, res) => {
       bowler: ballBowler
     });
 
-    /* ================= OVER END ================= */
     const isEndOver = innings.ballsBowled % 6 === 0;
+
     if (isEndOver) {
-      // swap strike at end of over only if both batters exist
       if (innings.striker && innings.nonStriker) {
         [innings.striker, innings.nonStriker] = [
           innings.nonStriker,
@@ -248,66 +243,70 @@ export const addBall = async (req, res) => {
       }
 
       innings.lastBowler = innings.currentBowler;
-      innings.currentBowler = null; // force select bowler
+      innings.currentBowler = null;
     }
 
-    /* ================= CHECK INNINGS END ================= */
-    const inningsAllOut = innings.wickets >= innings.players.length - 1;
-    const inningsOversDone = innings.ballsBowled >= maxBalls;
+    /* ================= INNINGS END CHECK ================= */
 
-    const inningsEnded = inningsAllOut || inningsOversDone;
+    const inningsAllOut =
+      innings.wickets >= innings.players.length - 1;
 
-    // ✅ if second innings, also ends if chase complete
-    const chaseDone =
-      match.currentInnings === 2 &&
-      match.target &&
-      innings.totalRuns >= match.target;
+    const inningsOversDone =
+      innings.ballsBowled >= maxBalls;
 
-    /* ================= TRANSITIONS ================= */
-    if (match.currentInnings === 1 && inningsEnded) {
-      // End of innings 1 -> start innings 2
-      match.target = innings.totalRuns + 1;
-      match.currentInnings = 2;
+    const inningsEnded =
+      inningsAllOut || inningsOversDone;
 
-      const innings2BattingTeam = match.teams[1];
-      const innings2BowlingTeam = match.teams[0];
+    if (inningsEnded) {
 
-      const innings2Players = (match.squads?.teamB || []).map((p) => ({
-        name: p.name,
-        role: p.role || "BATTER",
-        runs: 0,
-        balls: 0,
-        status: "YET_TO_BAT"
-      }));
+      const totalInningsPlayed = match.innings.length;
+      const totalAllowedInnings =
+        match.maxInningsPerTeam * 2;
 
-      match.innings.push({
-        inningsNumber: 2,
-        battingTeam: innings2BattingTeam,
-        bowlingTeam: innings2BowlingTeam,
-        totalRuns: 0,
-        wickets: 0,
-        ballsBowled: 0,
-        striker: null,
-        nonStriker: null,
-        currentBowler: null,
-        lastBowler: null,
-        players: innings2Players,
-        ballsLog: []
-      });
-    }
+      /* ================= ODI ================= */
+      if (match.format === "ODI") {
 
-    // ✅ second innings completion check after transition logic
-    if (match.currentInnings === 2) {
-      const innings2 = match.innings[1]; // now safe reference
+        if (totalInningsPlayed === 1) {
+          match.target = innings.totalRuns + 1;
+        }
 
-      if (innings2) {
-        const innings2AllOut = innings2.wickets >= innings2.players.length - 1;
-        const innings2OversDone = innings2.ballsBowled >= maxBalls;
-        const innings2ChaseDone =
-          match.target && innings2.totalRuns >= match.target;
+        if (totalInningsPlayed < totalAllowedInnings) {
+          startNextInnings(match);
+        } else {
+          completeMatch(match);
+        }
+      }
 
-        if (innings2AllOut || innings2OversDone || innings2ChaseDone) {
-          match.status = "COMPLETED";
+      /* ================= TEST ================= */
+      if (match.format === "TEST") {
+
+        if (totalInningsPlayed === 2) {
+
+          const first = match.innings[0];
+          const second = match.innings[1];
+
+          const lead =
+            first.totalRuns - second.totalRuns;
+
+          if (lead >= 100) {
+            match.followOn = true;
+
+            startSpecificInnings(
+              match,
+              second.battingTeam,
+              second.bowlingTeam
+            );
+
+            await match.save();
+            req.io.to(match._id.toString()).emit("match-updated", match);
+            return res.json(match);
+          }
+        }
+
+        if (totalInningsPlayed < totalAllowedInnings) {
+          startNextInnings(match);
+        } else {
+          completeMatch(match);
         }
       }
     }
@@ -316,6 +315,7 @@ export const addBall = async (req, res) => {
     req.io.to(match._id.toString()).emit("match-updated", match);
 
     res.json(match);
+
   } catch (err) {
     console.error("ADD BALL ERROR:", err);
     res.status(500).json({ error: err.message });
