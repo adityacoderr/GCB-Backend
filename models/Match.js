@@ -7,12 +7,18 @@ const BallSchema = new mongoose.Schema(
     ball: Number, // 1..6 (legal ball count)
     type: {
       type: String,
-      enum: ["RUN", "WICKET", "WIDE", "NOBALL"],
+      enum: ["RUN", "WICKET", "RUNOUT", "WIDE", "NOBALL"],
       required: true
     },
     runs: { type: Number, default: 0 },
     batter: String,
-    bowler: String
+    bowler: String,
+    dismissedPlayer: String,
+    dismissalType: {
+      type: String,
+      enum: ["RUNOUT", null],
+      default: null
+    }
   },
   { _id: false }
 );
@@ -52,6 +58,8 @@ const InningsSchema = new mongoose.Schema(
     wickets: { type: Number, default: 0 },
 
     ballsBowled: { type: Number, default: 0 }, // ✅ legal balls only
+    isFreeHit: { type: Boolean, default: false },
+    isDeclared: { type: Boolean, default: false },
 
     striker: { type: String, default: null },
     nonStriker: { type: String, default: null },
@@ -72,6 +80,15 @@ const MatchSchema = new mongoose.Schema(
   {
     teams: { type: [String], required: true },
 
+    toss: {
+      winner: { type: String, default: null },
+      decision: {
+        type: String,
+        enum: ["BAT", "BOWL"],
+        default: null
+      }
+    },
+
     format: {
       type: String,
       enum: ["TEST", "ODI"],
@@ -87,6 +104,21 @@ const MatchSchema = new mongoose.Schema(
     maxInningsPerTeam: {
       type: Number,
       default: 1 // ODI default
+    },
+
+    target: {
+      type: Number,
+      default: null
+    },
+
+    followOn: {
+      type: Boolean,
+      default: false
+    },
+
+    declaredInnings: {
+      type: [Number],
+      default: []
     },
 
     isDeclared : {

@@ -6,6 +6,7 @@ import {
   setOpeners,
   selectBowler,
   addBall,
+  editLastBall,
   addNextBatter,
   getMatch,
   getLiveMatches,
@@ -22,6 +23,7 @@ router.post("/verify-pin", verifyPin);
 router.post("/set-openers", setOpeners);
 router.post("/select-bowler", selectBowler);
 router.post("/add-ball", addBall);
+router.post("/edit-last-ball", editLastBall);
 router.post("/add-next-batter", addNextBatter);
 router.post("/declare", declareInnings);
 
