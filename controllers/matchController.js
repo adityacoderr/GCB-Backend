@@ -4,7 +4,11 @@ import bcrypt from "bcrypt";
 /* ================= CREATE MATCH ================= */
 export const createMatch = async (req, res) => {
   try {
-    const { oversLimit, teams, players, pin, format, toss } = req.body;
+    const { oversLimit, teams, players, pin, format, toss, scheduledAt } = req.body;
+    const teamAPlayersRaw = Array.isArray(players?.teamA) ? players.teamA : [];
+    const teamBPlayersRaw = Array.isArray(players?.teamB) ? players.teamB : [];
+    const hasSquadsNow =
+      teamAPlayersRaw.length > 0 || teamBPlayersRaw.length > 0;
 
     const cleanTeams = (teams || []).map((t) => String(t || "").trim());
 
@@ -14,16 +18,18 @@ export const createMatch = async (req, res) => {
       !cleanTeams[0] ||
       !cleanTeams[1] ||
       cleanTeams[0] === cleanTeams[1] ||
-      !players?.teamA ||
-      !players?.teamB ||
-      players.teamA.length < 2 ||
-      players.teamB.length < 2 ||
       !pin
     ) {
       return res.status(400).json({ error: "Invalid match setup data" });
     }
 
-    if (players.teamA.length !== players.teamB.length) {
+    if (hasSquadsNow && (teamAPlayersRaw.length < 2 || teamBPlayersRaw.length < 2)) {
+      return res.status(400).json({
+        error: "Add at least 2 players in each squad"
+      });
+    }
+
+    if (teamAPlayersRaw.length !== teamBPlayersRaw.length) {
       return res.status(400).json({
         error: "Both teams must have equal number of players"
       });
@@ -33,16 +39,25 @@ export const createMatch = async (req, res) => {
       return res.status(400).json({ error: "Invalid match format" });
     }
 
+    const hasToss = Boolean(toss?.winner && toss?.decision);
     if (
-      !toss?.winner ||
-      !toss?.decision ||
-      !cleanTeams.includes(toss.winner) ||
-      !["BAT", "BOWL"].includes(toss.decision)
+      hasToss &&
+      (!cleanTeams.includes(toss.winner) || !["BAT", "BOWL"].includes(toss.decision))
     ) {
       return res.status(400).json({ error: "Invalid toss data" });
     }
+    if (hasToss && !hasSquadsNow) {
+      return res.status(400).json({
+        error: "Add squads when toss is set during match creation"
+      });
+    }
 
     const maxInningsPerTeam = format === "TEST" ? 2 : 1;
+    const parsedScheduledAt = scheduledAt ? new Date(scheduledAt) : null;
+    const hasValidSchedule =
+      parsedScheduledAt && !Number.isNaN(parsedScheduledAt.getTime());
+    const initialStatus =
+      hasValidSchedule && parsedScheduledAt > new Date() ? "SETUP" : "LIVE";
 
     const pinHash = await bcrypt.hash(pin, 10);
 
@@ -54,18 +69,26 @@ export const createMatch = async (req, res) => {
       status: "YET_TO_BAT"
     });
 
-    const squadA = players.teamA.map(normalizePlayer);
-    const squadB = players.teamB.map(normalizePlayer);
+    const squadA = teamAPlayersRaw
+      .map(normalizePlayer)
+      .filter((p) => p.name);
+    const squadB = teamBPlayersRaw
+      .map(normalizePlayer)
+      .filter((p) => p.name);
 
-    const tossWinner = toss.winner;
+    const tossWinner = hasToss ? toss.winner : null;
     const otherTeam =
       tossWinner === cleanTeams[0] ? cleanTeams[1] : cleanTeams[0];
 
     const firstBattingTeam =
-      toss.decision === "BAT" ? tossWinner : otherTeam;
+      hasToss && toss.decision === "BAT" ? tossWinner : hasToss ? otherTeam : null;
 
     const firstBowlingTeam =
-      firstBattingTeam === cleanTeams[0] ? cleanTeams[1] : cleanTeams[0];
+      hasToss
+        ? firstBattingTeam === cleanTeams[0]
+          ? cleanTeams[1]
+          : cleanTeams[0]
+        : null;
 
     const innings1 = {
       inningsNumber: 1,
@@ -81,7 +104,9 @@ export const createMatch = async (req, res) => {
       currentBowler: null,
       lastBowler: null,
       players:
-        firstBattingTeam === cleanTeams[0]
+        !firstBattingTeam
+          ? []
+          : firstBattingTeam === cleanTeams[0]
           ? squadA.map((p) => ({ ...p }))
           : squadB.map((p) => ({ ...p })),
       ballsLog: []
@@ -91,15 +116,16 @@ export const createMatch = async (req, res) => {
       teams: cleanTeams,
       toss: {
         winner: tossWinner,
-        decision: toss.decision
+        decision: hasToss ? toss.decision : null
       },
       format,
       maxInningsPerTeam,
       declaredInnings: [],
       oversLimit: Number(oversLimit),
+      scheduledAt: hasValidSchedule ? parsedScheduledAt : null,
       scorerPinHash: pinHash,
       currentInnings: 1,
-      status: "LIVE",
+      status: hasToss ? initialStatus : "SETUP",
       squads: { teamA: squadA, teamB: squadB },
       innings: [innings1]
     });
@@ -107,6 +133,117 @@ export const createMatch = async (req, res) => {
     res.json(match);
   } catch (err) {
     console.error("CREATE MATCH ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/* ================= SET TOSS (SETUP -> LIVE) ================= */
+export const setToss = async (req, res) => {
+  try {
+    const { matchId, winner, decision, players } = req.body;
+
+    if (!matchId || !winner || !decision) {
+      return res.status(400).json({ error: "matchId, winner and decision are required" });
+    }
+
+    if (!["BAT", "BOWL"].includes(decision)) {
+      return res.status(400).json({ error: "Invalid toss decision" });
+    }
+
+    const match = await Match.findById(matchId);
+    if (!match) return res.status(404).json({ error: "Match not found" });
+    if (!match.teams.includes(winner)) {
+      return res.status(400).json({ error: "Toss winner must be one of the match teams" });
+    }
+    if (match.status === "COMPLETED") {
+      return res.status(400).json({ error: "Cannot set toss for completed match" });
+    }
+
+    const innings = match.innings?.[0];
+    if (!innings) return res.status(400).json({ error: "Invalid innings state" });
+    if (innings.ballsLog?.length > 0 || innings.ballsBowled > 0 || innings.totalRuns > 0) {
+      return res.status(400).json({ error: "Cannot set toss after scoring has started" });
+    }
+
+    const hasTeamASquad = (match.squads?.teamA || []).length > 0;
+    const hasTeamBSquad = (match.squads?.teamB || []).length > 0;
+    const needsSquadsFromRequest = !hasTeamASquad || !hasTeamBSquad;
+
+    if (needsSquadsFromRequest) {
+      const rawTeamA = Array.isArray(players?.teamA) ? players.teamA : [];
+      const rawTeamB = Array.isArray(players?.teamB) ? players.teamB : [];
+
+      if (rawTeamA.length < 2 || rawTeamB.length < 2) {
+        return res.status(400).json({
+          error: "Add at least 2 players in each squad before toss"
+        });
+      }
+
+      if (rawTeamA.length !== rawTeamB.length) {
+        return res.status(400).json({
+          error: "Both teams must have equal number of players"
+        });
+      }
+
+      const normalizePlayer = (p) => ({
+        name: String(p?.name || "").trim(),
+        role: p?.role || "BATTER",
+        runs: 0,
+        balls: 0,
+        status: "YET_TO_BAT"
+      });
+
+      const teamASquad = rawTeamA.map(normalizePlayer).filter((p) => p.name);
+      const teamBSquad = rawTeamB.map(normalizePlayer).filter((p) => p.name);
+
+      if (teamASquad.length < 2 || teamBSquad.length < 2) {
+        return res.status(400).json({
+          error: "Player names are required in both squads"
+        });
+      }
+
+      match.squads = {
+        teamA: teamASquad,
+        teamB: teamBSquad
+      };
+    }
+
+    const otherTeam = winner === match.teams[0] ? match.teams[1] : match.teams[0];
+    const battingTeam = decision === "BAT" ? winner : otherTeam;
+    const bowlingTeam = battingTeam === match.teams[0] ? match.teams[1] : match.teams[0];
+
+    const squadSource = battingTeam === match.teams[0] ? match.squads.teamA : match.squads.teamB;
+    if (!squadSource?.length) {
+      return res.status(400).json({ error: "Batting squad is missing for toss start" });
+    }
+    const playersCopy = (squadSource || []).map((p) => ({
+      name: p.name,
+      role: p.role || "BATTER",
+      runs: 0,
+      balls: 0,
+      status: "YET_TO_BAT"
+    }));
+
+    innings.battingTeam = battingTeam;
+    innings.bowlingTeam = bowlingTeam;
+    innings.players = playersCopy;
+    innings.striker = null;
+    innings.nonStriker = null;
+    innings.currentBowler = null;
+    innings.lastBowler = null;
+    innings.totalRuns = 0;
+    innings.wickets = 0;
+    innings.ballsBowled = 0;
+    innings.ballsLog = [];
+
+    match.toss = { winner, decision };
+    match.status = "LIVE";
+
+    await match.save();
+    req.io.to(match._id.toString()).emit("match-updated", match);
+    res.json(match);
+  } catch (err) {
+    console.error("SET TOSS ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -652,7 +789,7 @@ export const addBall = async (req, res) => {
 /* ================= EDIT LAST BALL ================= */
 export const editLastBall = async (req, res) => {
   try {
-    const { matchId, type, runs } = req.body;
+    const { matchId, type, runs, dismissedPlayer } = req.body;
 
     const correctedType = String(type || "")
       .toUpperCase()
@@ -691,6 +828,10 @@ export const editLastBall = async (req, res) => {
     const oldType = lastBall.type;
     const oldRuns = Number(lastBall.runs || 0);
     const oldBatterName = lastBall.batter;
+    const oldDismissedName =
+      isRunOutBall(lastBall)
+        ? lastBall.dismissedPlayer || lastBall.batter
+        : lastBall.batter;
     const oldBowlerName = lastBall.bowler || innings.currentBowler || null;
     const isOldLegal =
       oldType === "RUN" || oldType === "WICKET" || oldType === "RUNOUT";
@@ -714,24 +855,47 @@ export const editLastBall = async (req, res) => {
 
       if (oldType === "WICKET" || oldType === "RUNOUT") {
         innings.wickets = Math.max(Number(innings.wickets || 0) - 1, 0);
-        oldBatter.status = "ON";
-
-        // If next batter was selected after wicket, revert that selection.
-        if (innings.striker && innings.striker !== oldBatterName) {
-          const replacement = innings.players.find(
-            (p) => p.name === innings.striker
-          );
-          if (
-            replacement &&
-            replacement.status === "ON" &&
-            Number(replacement.runs || 0) === 0 &&
-            Number(replacement.balls || 0) === 0
-          ) {
-            replacement.status = "YET_TO_BAT";
-          }
+        const oldDismissedPlayer = innings.players.find(
+          (p) => p.name === oldDismissedName
+        );
+        if (!oldDismissedPlayer) {
+          return res.status(400).json({
+            error: "Old dismissed batter not found for edit"
+          });
         }
+        oldDismissedPlayer.status = "ON";
 
-        innings.striker = oldBatterName;
+        // If a replacement batter was selected after dismissal, revert it.
+        const revertReplacementAtEnd = (end) => {
+          const currentName =
+            end === "STRIKER" ? innings.striker : innings.nonStriker;
+
+          if (currentName && currentName !== oldDismissedName) {
+            const replacement = innings.players.find(
+              (p) => p.name === currentName
+            );
+            if (
+              replacement &&
+              replacement.status === "ON" &&
+              Number(replacement.runs || 0) === 0 &&
+              Number(replacement.balls || 0) === 0
+            ) {
+              replacement.status = "YET_TO_BAT";
+            }
+          }
+
+          if (end === "STRIKER") {
+            innings.striker = oldDismissedName;
+          } else {
+            innings.nonStriker = oldDismissedName;
+          }
+        };
+
+        if (oldDismissedName === oldBatterName) {
+          revertReplacementAtEnd("STRIKER");
+        } else {
+          revertReplacementAtEnd("NON_STRIKER");
+        }
       } else {
         // Undo net strike swap from old RUN.
         const oldNetSwap = (oldRuns % 2 === 1) !== oldEndedOver;
@@ -771,9 +935,36 @@ export const editLastBall = async (req, res) => {
       if (correctedType === "RUN") {
         striker.runs += correctedRuns;
       } else {
+        const dismissedName =
+          correctedType === "RUNOUT"
+            ? dismissedPlayer ||
+              lastBall.dismissedPlayer ||
+              innings.striker
+            : innings.striker;
+
+        if (
+          dismissedName !== innings.striker &&
+          dismissedName !== innings.nonStriker
+        ) {
+          return res.status(400).json({
+            error: "Run out batter must be striker or non-striker"
+          });
+        }
+
+        const dismissed = innings.players.find((p) => p.name === dismissedName);
+        if (!dismissed) {
+          return res.status(400).json({
+            error: "Dismissed batter not found"
+          });
+        }
+
         innings.wickets += 1;
-        striker.status = "OUT";
-        innings.striker = null;
+        dismissed.status = "OUT";
+        if (dismissedName === innings.striker) {
+          innings.striker = null;
+        } else {
+          innings.nonStriker = null;
+        }
       }
 
       if (
@@ -805,6 +996,10 @@ export const editLastBall = async (req, res) => {
     lastBall.batter = oldBatterName;
     if (oldBowlerName) lastBall.bowler = oldBowlerName;
     lastBall.dismissalType = correctedType === "RUNOUT" ? "RUNOUT" : null;
+    lastBall.dismissedPlayer =
+      correctedType === "RUNOUT"
+        ? dismissedPlayer || lastBall.dismissedPlayer || oldBatterName
+        : null;
     recomputeFreeHit(innings);
     completeMatchIfTargetChased(match);
 
@@ -957,6 +1152,7 @@ export const getLiveMatches = async (req, res) => {
         teams: 1,
         format: 1,
         oversLimit: 1,
+        scheduledAt: 1,
         currentInnings: 1,
         target: 1,
         result: 1,

@@ -2,6 +2,7 @@ import express from "express";
 
 import {
   createMatch,
+  setToss,
   verifyPin,
   setOpeners,
   selectBowler,
@@ -17,6 +18,7 @@ const router = express.Router();
 
 /* ADMIN */
 router.post("/create", createMatch);
+router.post("/set-toss", setToss);
 router.post("/verify-pin", verifyPin);
 
 /* UMPIRE */

@@ -96,6 +96,7 @@ const MatchSchema = new mongoose.Schema(
     },
 
     oversLimit: { type: Number, required: true },
+    scheduledAt: { type: Date, default: null },
 
     scorerPinHash: { type: String, required: true },
 
