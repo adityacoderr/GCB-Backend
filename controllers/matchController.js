@@ -376,6 +376,191 @@ function startSpecificInnings(match, battingTeam, bowlingTeam) {
   });
 }
 
+function getOversTextFromBalls(balls = 0) {
+  const b = Number(balls || 0);
+  return `${Math.floor(b / 6)}.${b % 6}`;
+}
+
+function buildMatchSummary(match) {
+  const result = match.result || "Result unavailable";
+  const winnerTeam =
+    (match.teams || []).find((t) => result.startsWith(t)) || null;
+
+  const batterAgg = {};
+  const bowlerAgg = {};
+  const bigOvers = [];
+  const inningsSummaries = [];
+
+  for (const innings of match.innings || []) {
+    const team = innings.battingTeam || "Unknown";
+
+    for (const p of innings.players || []) {
+      const key = `${team}::${p.name}`;
+      if (!batterAgg[key]) {
+        batterAgg[key] = {
+          name: p.name,
+          team,
+          runs: 0,
+          balls: 0,
+          score: 0
+        };
+      }
+      batterAgg[key].runs += Number(p.runs || 0);
+      batterAgg[key].balls += Number(p.balls || 0);
+    }
+
+    const overMap = {};
+    for (const ball of innings.ballsLog || []) {
+      const overNo = Number(ball.over || 0);
+      if (!overMap[overNo]) {
+        overMap[overNo] = { runs: 0, wickets: 0 };
+      }
+      overMap[overNo].runs += Number(ball.runs || 0);
+      if (ball.type === "WICKET") {
+        overMap[overNo].wickets += 1;
+      }
+
+      const bowler = ball.bowler || "Unknown";
+      if (!bowlerAgg[bowler]) {
+        bowlerAgg[bowler] = {
+          name: bowler,
+          wickets: 0,
+          runsConceded: 0,
+          legalBalls: 0
+        };
+      }
+      bowlerAgg[bowler].runsConceded += Number(ball.runs || 0);
+      if (ball.type === "RUN" || ball.type === "WICKET") {
+        bowlerAgg[bowler].legalBalls += 1;
+      }
+      if (ball.type === "WICKET" && ball.dismissalType !== "RUNOUT") {
+        bowlerAgg[bowler].wickets += 1;
+      }
+    }
+
+    Object.entries(overMap).forEach(([over, data]) => {
+      bigOvers.push({
+        innings: innings.inningsNumber,
+        team,
+        over: Number(over),
+        runs: data.runs,
+        wickets: data.wickets
+      });
+    });
+
+    inningsSummaries.push({
+      innings: innings.inningsNumber,
+      team,
+      score: `${innings.totalRuns}/${innings.wickets}`,
+      overs: getOversTextFromBalls(innings.ballsBowled)
+    });
+  }
+
+  const topBatters = Object.values(batterAgg)
+    .map((b) => ({
+      ...b,
+      strikeRate: b.balls ? Number(((b.runs / b.balls) * 100).toFixed(1)) : 0,
+      score:
+        b.runs +
+        (b.balls ? Math.max(((b.runs / b.balls) * 100 - 100) * 0.15, 0) : 0)
+    }))
+    .sort((a, b) => b.score - a.score || b.runs - a.runs)
+    .slice(0, 3)
+    .map((b) => ({
+      name: b.name,
+      team: b.team,
+      runs: b.runs,
+      balls: b.balls,
+      strikeRate: b.strikeRate
+    }));
+
+  const topBowlers = Object.values(bowlerAgg)
+    .map((b) => ({
+      ...b,
+      overs: getOversTextFromBalls(b.legalBalls),
+      economy: b.legalBalls ? Number((b.runsConceded / (b.legalBalls / 6)).toFixed(2)) : 0,
+      score: b.wickets * 22 - (b.legalBalls ? b.runsConceded / (b.legalBalls / 6) : 0)
+    }))
+    .sort((a, b) => b.score - a.score || b.wickets - a.wickets || a.runsConceded - b.runsConceded)
+    .slice(0, 3)
+    .map((b) => ({
+      name: b.name,
+      wickets: b.wickets,
+      runsConceded: b.runsConceded,
+      overs: b.overs,
+      economy: b.economy
+    }));
+
+  const bestOverList = [...bigOvers]
+    .sort((a, b) => b.runs - a.runs || b.wickets - a.wickets)
+    .slice(0, 3);
+
+  const momentumOver = [...bigOvers]
+    .map((o) => {
+      const battingSwing = o.runs * 1.2 - o.wickets * 8;
+      const winnerSwing =
+        winnerTeam && o.team !== winnerTeam ? -battingSwing : battingSwing;
+      return {
+        ...o,
+        winnerSwing
+      };
+    })
+    .sort((a, b) => Math.abs(b.winnerSwing) - Math.abs(a.winnerSwing))[0];
+
+  const momPool = [
+    ...topBatters.map((b) => ({
+      type: "BAT",
+      name: b.name,
+      team: b.team,
+      score: b.runs + b.strikeRate * 0.2,
+      note: `${b.runs} (${b.balls})`
+    })),
+    ...topBowlers.map((b) => ({
+      type: "BOWL",
+      name: b.name,
+      team: winnerTeam || "N/A",
+      score: b.wickets * 25 - b.economy,
+      note: `${b.wickets}/${b.runsConceded} in ${b.overs} ov`
+    }))
+  ].sort((a, b) => b.score - a.score);
+
+  const playerOfMatch = momPool[0]
+    ? {
+        name: momPool[0].name,
+        impact: momPool[0].note
+      }
+    : null;
+
+  const turningPointText = momentumOver
+    ? `Innings ${momentumOver.innings}, Over ${momentumOver.over}: ${momentumOver.team} scored ${momentumOver.runs} with ${momentumOver.wickets} wicket(s).`
+    : "Turning point could not be isolated from available ball logs.";
+
+  const summaryNarrative = [
+    `${result}.`,
+    playerOfMatch
+      ? `${playerOfMatch.name} stood out with ${playerOfMatch.impact}.`
+      : "No clear standout performer from stats.",
+    momentumOver
+      ? `Momentum shifted around Over ${momentumOver.over} of Innings ${momentumOver.innings}.`
+      : "Momentum remained evenly spread through phases.",
+    bestOverList[0]
+      ? `Biggest over: ${bestOverList[0].runs} runs by ${bestOverList[0].team} in over ${bestOverList[0].over}.`
+      : "No major over spikes detected."
+  ].join(" ");
+
+  return {
+    generatedAt: new Date(),
+    headline: `AI Match Summary: ${match.teams?.[0]} vs ${match.teams?.[1]}`,
+    narrative: summaryNarrative,
+    turningPoint: turningPointText,
+    playerOfMatch,
+    topBatters,
+    topBowlers,
+    bigOvers: bestOverList,
+    inningsTimeline: inningsSummaries
+  };
+}
+
 function completeMatch(match) {
 
   const teamA = match.teams[0];
@@ -402,7 +587,6 @@ function completeMatch(match) {
         lastInnings.players.length - 1 - lastInnings.wickets;
 
       match.result = `${lastInnings.battingTeam} won by ${wicketsLeft} wickets`;
-      return;
     }
   }
 
@@ -414,7 +598,6 @@ function completeMatch(match) {
       const first = match.innings[0];
 
       match.result = `${first.battingTeam} won by an innings`;
-      return;
     }
 
     // ===== TEST 4th innings chase win by wickets =====
@@ -426,18 +609,23 @@ function completeMatch(match) {
           lastInnings.players.length - 1 - lastInnings.wickets;
 
         match.result = `${lastInnings.battingTeam} won by ${wicketsLeft} wickets`;
-        return;
       }
     }
   }
 
   // ===== Normal run win =====
-  if (teamATotal > teamBTotal)
-    match.result = `${teamA} won by ${teamATotal - teamBTotal} runs`;
-  else if (teamBTotal > teamATotal)
-    match.result = `${teamB} won by ${teamBTotal - teamATotal} runs`;
-  else
-    match.result = "Match Drawn";
+  if (!match.result) {
+    if (teamATotal > teamBTotal)
+      match.result = `${teamA} won by ${teamATotal - teamBTotal} runs`;
+    else if (teamBTotal > teamATotal)
+      match.result = `${teamB} won by ${teamBTotal - teamATotal} runs`;
+    else
+      match.result = "Match Drawn";
+  }
+
+  if (!match.aiSummary?.generatedAt) {
+    match.aiSummary = buildMatchSummary(match);
+  }
 }
 
 function recomputeFreeHit(innings) {
@@ -1177,6 +1365,14 @@ export const getMatch = async (req, res) => {
   try {
     const match = await Match.findById(req.params.id);
     if (!match) return res.status(404).json({ error: "Match not found" });
+
+    if (
+      String(match.status || "").toUpperCase() === "COMPLETED" &&
+      !match.aiSummary?.generatedAt
+    ) {
+      match.aiSummary = buildMatchSummary(match);
+      await match.save();
+    }
 
     res.json(match);
   } catch (err) {

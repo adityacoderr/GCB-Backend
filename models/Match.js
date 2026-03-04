@@ -132,6 +132,11 @@ const MatchSchema = new mongoose.Schema(
       default: null
     },
 
+    aiSummary: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null
+    },
+
     status: {
       type: String,
       enum: ["SETUP", "LIVE", "COMPLETED"],
