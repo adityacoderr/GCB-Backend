@@ -1417,6 +1417,39 @@ export const verifyPin = async (req, res) => {
   }
 };
 
+/* ================= ADMIN DELETE MATCH ================= */
+export const adminDeleteMatch = async (req, res) => {
+  try {
+    const { matchId, adminPin } = req.body;
+
+    if (!matchId || !adminPin) {
+      return res.status(400).json({ error: "matchId and adminPin are required" });
+    }
+
+    const expectedPin = process.env.ADMIN_DELETE_PIN;
+    if (!expectedPin) {
+      return res.status(500).json({
+        error: "ADMIN_DELETE_PIN is not configured on server"
+      });
+    }
+
+    if (String(adminPin) !== String(expectedPin)) {
+      return res.status(401).json({ error: "Invalid admin PIN" });
+    }
+
+    const match = await Match.findById(matchId);
+    if (!match) return res.status(404).json({ error: "Match not found" });
+
+    await Match.findByIdAndDelete(matchId);
+
+    req.io.to(matchId).emit("match-deleted", { matchId });
+    res.json({ success: true, deletedId: matchId });
+  } catch (err) {
+    console.error("ADMIN DELETE MATCH ERROR:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
 
 export const setOpeners = async (req, res) => {
   try {

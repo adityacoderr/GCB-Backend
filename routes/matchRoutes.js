@@ -3,6 +3,7 @@ import express from "express";
 import {
   createMatch,
   setToss,
+  adminDeleteMatch,
   verifyPin,
   setOpeners,
   selectBowler,
@@ -19,6 +20,7 @@ const router = express.Router();
 /* ADMIN */
 router.post("/create", createMatch);
 router.post("/set-toss", setToss);
+router.post("/admin/delete", adminDeleteMatch);
 router.post("/verify-pin", verifyPin);
 
 /* UMPIRE */
