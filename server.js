@@ -53,6 +53,13 @@ app.use((req, res, next) => {
 
 /* ================== ROUTES ================== */
 app.get("/", (req, res) => res.send("Gully Cricket API running"));
+app.get("/api/healthz", (req, res) => {
+  res.json({
+    ok: true,
+    service: "gully-cricket-api",
+    now: new Date().toISOString()
+  });
+});
 app.use("/api/match", matchRoutes);
 app.use("/api/match/declare", declareInnings); 
 
@@ -67,3 +74,28 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, () =>
   console.log(`Server running on port ${PORT}`)
 );
+
+/* ================== KEEP ALIVE (RENDER) ================== */
+const SELF_PING_URL =
+  process.env.RENDER_EXTERNAL_URL ||
+  process.env.PUBLIC_BASE_URL ||
+  null;
+
+if (SELF_PING_URL) {
+  const keepAliveUrl = `${String(SELF_PING_URL).replace(/\/+$/, "")}/api/healthz`;
+  const KEEP_ALIVE_MS = 8 * 60 * 1000; // under Render free-tier idle window
+
+  const pingSelf = async () => {
+    try {
+      await fetch(keepAliveUrl, { method: "GET" });
+      console.log("Keep-alive ping sent:", keepAliveUrl);
+    } catch (err) {
+      console.error("Keep-alive ping failed:", err.message);
+    }
+  };
+
+  setTimeout(() => {
+    pingSelf();
+    setInterval(pingSelf, KEEP_ALIVE_MS);
+  }, 20 * 1000);
+}
