@@ -1410,7 +1410,25 @@ export const verifyPin = async (req, res) => {
       return res.status(401).json({ error: "Invalid PIN" });
     }
 
-    res.json({ success: true });
+    // Upcoming (SETUP) matches with toss+innings ready should start when scorer unlocks.
+    if (match.status === "SETUP") {
+      const innings = match.innings?.[0];
+      const canStartFromPin =
+        Boolean(match.toss?.winner) &&
+        Boolean(match.toss?.decision) &&
+        Boolean(innings?.battingTeam) &&
+        Boolean(innings?.bowlingTeam) &&
+        Array.isArray(innings?.players) &&
+        innings.players.length > 0;
+
+      if (canStartFromPin) {
+        match.status = "LIVE";
+        await match.save();
+        req.io?.to(match._id.toString()).emit("match-updated", match);
+      }
+    }
+
+    res.json({ success: true, status: match.status });
   } catch (err) {
     console.error("VERIFY PIN ERROR:", err);
     res.status(500).json({ error: "Server error" });
@@ -1462,11 +1480,29 @@ export const setOpeners = async (req, res) => {
     const match = await Match.findById(matchId);
     if (!match) return res.status(404).json({ error: "Match not found" });
 
+    const innings = match.innings[match.currentInnings - 1];
+    if (!innings) {
+      return res.status(400).json({ error: "Invalid innings state" });
+    }
+
+    // Allow scorer to start configured upcoming match from opener selection flow.
+    if (match.status === "SETUP") {
+      const canStartFromOpeners =
+        Boolean(match.toss?.winner) &&
+        Boolean(match.toss?.decision) &&
+        Boolean(innings.battingTeam) &&
+        Boolean(innings.bowlingTeam) &&
+        Array.isArray(innings.players) &&
+        innings.players.length > 0;
+
+      if (canStartFromOpeners) {
+        match.status = "LIVE";
+      }
+    }
+
     if (match.status !== "LIVE") {
       return res.status(400).json({ error: "Match not live" });
     }
-
-    const innings = match.innings[match.currentInnings - 1];
 
     const p1 = innings.players.find((p) => p.name === striker);
     const p2 = innings.players.find((p) => p.name === nonStriker);
