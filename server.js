@@ -19,11 +19,20 @@ app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 app.use(express.json());
 
 /* ================== DATABASE ================== */
+const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI;
+
+if (!mongoUri) {
+  console.error(
+    "Missing MongoDB URI. Set MONGO_URI or MONGODB_URI in environment variables."
+  );
+  process.exit(1);
+}
+
 mongoose
-  .connect(process.env.MONGO_URI, { dbName: "gully-cricket" })
+  .connect(mongoUri, { dbName: "gully-cricket" })
   .then(() => console.log("MongoDB connected"))
   .catch((err) => {
-    console.error(err);
+    console.error("MongoDB connection failed:", err.message);
     process.exit(1);
   });
 
